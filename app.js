@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const { randomUUID } = require('crypto');
 
 dotenv.config();
 
@@ -15,6 +16,9 @@ const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY || '';
 const MISTRAL_VISION_MODEL = process.env.MISTRAL_VISION_MODEL || 'mistral-small-latest';
 const MISTRAL_TEXT_MODEL = process.env.MISTRAL_TEXT_MODEL || 'mistral-small-latest';
 const RAG_DOCS_JSON = process.env.RAG_DOCS_JSON || '[]';
+const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 const chatMemory = new Map();
 const ragDocuments = (() => {
@@ -261,6 +265,99 @@ app.post('/food/autofill', async (req, res) => {
     return res.status(500).json({ error: 'Could not generate nutrition data.' });
   } catch (error) {
     res.status(500).json({ error: 'Nutrition autofill failed.' });
+  }
+});
+
+app.post('/auth/bridge-clerk', async (req, res) => {
+  try {
+    const { clerkUserId } = req.body || {};
+    if (!clerkUserId) {
+      return res.status(400).json({ error: 'clerkUserId is required.' });
+    }
+    if (!CLERK_SECRET_KEY || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      return res.status(400).json({ error: 'Clerk/Supabase admin config is missing.' });
+    }
+
+    const clerkUserResponse = await fetch(
+      `https://api.clerk.com/v1/users/${encodeURIComponent(clerkUserId)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${CLERK_SECRET_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    if (!clerkUserResponse.ok) {
+      const errorText = await clerkUserResponse.text();
+      return res.status(clerkUserResponse.status).json({
+        error: errorText || 'Failed to fetch Clerk user.',
+      });
+    }
+
+    const clerkUser = await clerkUserResponse.json();
+    const existing = clerkUser?.public_metadata?.supabase_user_id;
+    if (existing) {
+      return res.json({ supabase_user_id: existing, status: 'existing' });
+    }
+
+    const primaryEmailId = clerkUser?.primary_email_address_id;
+    const emailAddress =
+      clerkUser?.email_addresses?.find((e) => e.id === primaryEmailId)?.email_address ||
+      clerkUser?.email_addresses?.[0]?.email_address ||
+      `${clerkUserId}@clerk.local`;
+
+    const supabaseUserId = randomUUID();
+    const supabaseAdminUrl = `${SUPABASE_URL.replace(/\/$/, '')}/auth/v1/admin/users`;
+    const supabaseResponse = await fetch(supabaseAdminUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        id: supabaseUserId,
+        email: emailAddress,
+        email_confirm: true,
+        user_metadata: { clerk_user_id: clerkUserId },
+      }),
+    });
+
+    if (!supabaseResponse.ok) {
+      const errorText = await supabaseResponse.text();
+      return res.status(supabaseResponse.status).json({
+        error: errorText || 'Failed to create Supabase user.',
+      });
+    }
+
+    const clerkUpdateResponse = await fetch(
+      `https://api.clerk.com/v1/users/${encodeURIComponent(clerkUserId)}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${CLERK_SECRET_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          public_metadata: {
+            ...(clerkUser?.public_metadata || {}),
+            supabase_user_id: supabaseUserId,
+          },
+        }),
+      }
+    );
+
+    if (!clerkUpdateResponse.ok) {
+      const errorText = await clerkUpdateResponse.text();
+      return res.status(clerkUpdateResponse.status).json({
+        error: errorText || 'Failed to update Clerk metadata.',
+      });
+    }
+
+    return res.json({ supabase_user_id: supabaseUserId, status: 'created' });
+  } catch (error) {
+    res.status(500).json({ error: 'Clerk bridge failed.' });
   }
 });
 
