@@ -204,6 +204,64 @@ app.post('/food/analyze', async (req, res) => {
   }
 });
 
+app.post('/food/autofill', async (req, res) => {
+  try {
+    const { foodName } = req.body || {};
+    if (!foodName) {
+      return res.status(400).json({ error: 'foodName is required.' });
+    }
+    if (!MISTRAL_API_KEY) {
+      return res.status(400).json({ error: 'Mistral API key is not configured.' });
+    }
+
+    const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${MISTRAL_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: MISTRAL_TEXT_MODEL,
+        temperature: 0,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are a nutrition database. When given a food name, return ONLY a JSON object with keys: "calories", "protein_g", "carbs_g", "fat_g". Estimate values if unknown. Values should be numbers.',
+          },
+          {
+            role: 'user',
+            content: `Food: ${foodName}`,
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(response.status).json({ error: errorText || 'Mistral error.' });
+    }
+
+    const payload = await response.json();
+    const content = payload?.choices?.[0]?.message?.content ?? '';
+    
+    // Extract JSON from response
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return res.json(parsed);
+      } catch (e) {
+        return res.status(500).json({ error: 'Failed to parse nutrition data.' });
+      }
+    }
+    
+    return res.status(500).json({ error: 'Could not generate nutrition data.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Nutrition autofill failed.' });
+  }
+});
+
 const getUserId = (req) => req.headers['x-user-id'] || req.body?.userId || 'anonymous';
 
 const rankRag = (query) => {
