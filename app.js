@@ -207,6 +207,7 @@ app.post('/food/analyze', async (req, res) => {
 app.post('/food/autofill', async (req, res) => {
   try {
     const { foodName } = req.body || {};
+    console.log('autofill request:', foodName);
     if (!foodName) {
       return res.status(400).json({ error: 'foodName is required.' });
     }
@@ -244,6 +245,7 @@ app.post('/food/autofill', async (req, res) => {
 
     const payload = await response.json();
     const content = payload?.choices?.[0]?.message?.content ?? '';
+    console.log(payload);
     
     // Extract JSON from response
     const jsonMatch = content.match(/\{[\s\S]*\}/);
